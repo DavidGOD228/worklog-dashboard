@@ -1,0 +1,58 @@
+services:
+  # ── PostgreSQL (dedicated instance for this subproject) ────────────────────
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB:       worklog_dashboard
+      POSTGRES_USER:     worklog_user
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme_in_production}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U worklog_user -d worklog_dashboard"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    # Bind to localhost only — no external DB exposure
+    ports:
+      - "127.0.0.1:5433:5432"
+
+  # ── DB migration runner (one-shot, run once on first deploy) ──────────────
+  migrate:
+    profiles:
+      - migrate
+    build: .
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://worklog_user:${POSTGRES_PASSWORD:-changeme_in_production}@postgres:5432/worklog_dashboard
+    command: ["node", "src/db/migrate.js"]
+
+  # ── Application ─────────────────────────────────────────────────────────────
+  app:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://worklog_user:${POSTGRES_PASSWORD:-changeme_in_production}@postgres:5432/worklog_dashboard
+      NODE_ENV: production
+    ports:
+      # Bind to localhost; expose to internet via Nginx/Caddy reverse proxy
+      - "127.0.0.1:3200:3200"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3200/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+volumes:
+  postgres_data:
+    driver: local
